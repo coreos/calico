@@ -5,7 +5,10 @@ prefix = "/calico"
 keys = [
     "/bgp/v1/{{if (json (getv "/node_mesh")).enabled}}host{{else}}host/{{getenv "NODENAME"}}{{end}}",
     "/bgp/v1/global",
-    "/v1/ipam/v4/pool"
+    "/v1/ipam/v4/pool",
+    "/bgp/v1/reflector/host",
+    "/bgp/v1/subnet/host",
+    "/bgp/v1/subnet/reflector/host",
 ]
 check_cmd = "bird -p -c {{"{{"}}.src{{"}}"}}"
 reload_cmd = "pkill -HUP bird || true"

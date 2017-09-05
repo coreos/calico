@@ -4,6 +4,8 @@ include "custom_filters.cfg";
 include "bird_ipam.cfg";
 {{$node_ip_key := printf "/bgp/v1/host/%s/ip_addr_v4" (getenv "NODENAME")}}{{$node_ip := getv $node_ip_key}}
 {{$node_network_key := printf "/bgp/v1/host/%s/network_v4" (getenv "NODENAME")}}{{$node_network := getv $node_network_key}}
+{{$ipPool := json (getv (printf "/v1/ipam/v4/pool/%s" (replace (getenv "CALICO_IPV4POOL_CIDR") "/" "-" -1 ) ) )}}
+
 
 router id {{$node_ip}};
 
@@ -59,6 +61,7 @@ template bgp bgp_template {
 # ------------- Node-to-node mesh -------------
 {{if (json (getv "/bgp/v1/global/node_mesh")).enabled}}
 {{range $host := lsdir "/bgp/v1/host"}}
+# HOST {{gets (printf "/bgp/v1/host/%s/*" .)}}
 {{$onode_as_key := printf "/bgp/v1/host/%s/as_num" .}}
 {{$onode_ip_key := printf "/bgp/v1/host/%s/ip_addr_v4" .}}{{if exists $onode_ip_key}}{{$onode_ip := getv $onode_ip_key}}
 {{$onode_network_key := printf "/bgp/v1/host/%s/network_v4" .}}{{if exists $onode_network_key}}{{$onode_network := getv $onode_network_key}}
@@ -66,10 +69,8 @@ template bgp bgp_template {
 # For peer {{$onode_ip_key}}
 {{if eq $onode_ip ($node_ip) }}# Skipping ourselves ({{$node_ip}})
 {{else if ne "" $onode_ip}}protocol bgp Mesh_{{$id}} from bgp_template {
-{{range ls "/v1/ipam/v4/pool"}}{{$data := json (getv (printf "/v1/ipam/v4/pool/%s" .))}}{{if eq (getenv "CALICO_IPV4POOL_CIDR") $data.cidr }}
-  # associated pool: cidr={{$data.cidr}} ipip_mode={{$data.ipip_mode}}
   neighbor {{$onode_ip}} as {{if exists $onode_as_key}}{{getv $onode_as_key}}{{else}}{{getv "/bgp/v1/global/as_num"}}{{end}};
-{{if and (ne $data.ipip_mode "always") (eq $onode_network $node_network)}}
+{{if and (ne $ipPool.ipip_mode "always") (eq $onode_network $node_network)}}
   direct;    # There will be no host-SNAT when routing packets to this node
   gateway direct;
 {{else}}
@@ -77,7 +78,6 @@ template bgp bgp_template {
   multihop;
   gateway recursive; # This should be the default, but just in case.
 {{end}}
-{{end}}{{end}}
 }{{end}}{{end}}{{end}}{{end}}
 {{else}}
 # Node-to-node mesh disabled
@@ -98,7 +98,6 @@ template bgp bgp_template {
 }{{end}}
 {{end}}
 {{else}}# No global peers configured.{{end}}
-
 
 # ------------- Node-specific peers -------------
 {{$node_peers_key := printf "/bgp/v1/host/%s/peer_v4" (getenv "NODENAME")}}
