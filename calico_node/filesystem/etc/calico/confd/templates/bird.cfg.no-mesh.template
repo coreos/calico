@@ -2,17 +2,16 @@
 include "bird_aggr.cfg";
 include "custom_filters.cfg";
 include "bird_ipam.cfg";
-{{$node_ip_key := printf "/bgp/v1/host/%s/ip_addr_v4" (getenv "NODENAME")}}{{$node_ip := getv $node_ip_key}}
-{{$node_network_key := printf "/bgp/v1/host/%s/network_v4" (getenv "NODENAME")}}{{$node_network := getv $node_network_key}}
-{{$node_reflector_key := printf "/bgp/v1/host/%s/reflector" (getenv "NODENAME")}}{{$node_reflector := getv $node_reflector_key}}
-{{$ipPool := json (getv (printf "/v1/ipam/v4/pool/%s" (replace (getenv "CALICO_IPV4POOL_CIDR") "/" "-" -1 ) ) )}}
+{{$node_ip_key := printf "/host/%s/ip_addr_v4" (getenv "NODENAME")}}{{$node_ip := getv $node_ip_key}}
+{{$node_network_key := printf "/host/%s/network_v4" (getenv "NODENAME")}}{{$node_network := getv $node_network_key}}
+{{$node_reflector_key := printf "/host/%s/reflector" (getenv "NODENAME")}}{{$node_reflector := getv $node_reflector_key}}
 
 router id {{$node_ip}};
 
 {{define "LOGGING"}}
-{{$node_logging_key := printf "/bgp/v1/host/%s/loglevel" (getenv "NODENAME")}}{{if exists $node_logging_key}}{{$logging := getv $node_logging_key}}
+{{$node_logging_key := printf "/host/%s/loglevel" (getenv "NODENAME")}}{{if exists $node_logging_key}}{{$logging := getv $node_logging_key}}
 {{if eq $logging "debug"}}  debug all;{{else if ne $logging "none"}}  debug { states };{{end}}
-{{else if exists "/bgp/v1/global/loglevel"}}{{$logging := getv "/bgp/v1/global/loglevel"}}
+{{else if exists "/global/loglevel"}}{{$logging := getv "/global/loglevel"}}
 {{if eq $logging "debug"}}  debug all;{{else if ne $logging "none"}}  debug { states };{{end}}
 {{else}}  debug { states };{{end}}
 {{end}}
@@ -43,118 +42,94 @@ protocol direct {
   interface -"cali*", "*"; # Exclude cali* but include everything else.
 }
 
-{{$node_as_key := printf "/bgp/v1/host/%s/as_num" (getenv "NODENAME")}}
+{{$node_as_key := printf "/host/%s/as_num" (getenv "NODENAME")}}
 # Template for all BGP clients
 template bgp bgp_template {
   {{template "LOGGING"}}
   description "Connection to BGP peer";
-  local as {{if exists $node_as_key}}{{getv $node_as_key}}{{else}}{{getv "/bgp/v1/global/as_num"}}{{end}};
+  local as {{if exists $node_as_key}}{{getv $node_as_key}}{{else}}{{getv "/global/as_num"}}{{end}};
   import all;        # Import all routes, since we don't know what the upstream
                      # topology is and therefore have to trust the ToR/RR.
   export filter calico_pools;  # Only want to export routes for workloads.
 
   add paths on;
   graceful restart;  # See comment in kernel section about graceful restart.
+
+  multihop;
 }
 # ----------- Subnet Reflectors ----------
 
-{{if eq $node_reflector "subnet"}}
-# This node is a reflector!
-# peer with all non-reflector nodes in subnet
+{{if eq $node_reflector "subnet"}} # This node is a reflector!
 
-{{range $host := lsdir "/bgp/v1/subnet/host"}}
-# HOST {{gets (printf "/bgp/v1/subnet/host/%s/*" .)}}
-{{$onode_as_key := printf "/bgp/v1/subnet/host/%s/as_num" .}}
-{{$onode_ip_key := printf "/bgp/v1/subnet/host/%s/ip_addr_v4" .}}{{if exists $onode_ip_key}}{{$onode_ip := getv $onode_ip_key}}
-{{$onode_network_key := printf "/bgp/v1/subnet/host/%s/network_v4" .}}{{if exists $onode_network_key}}{{$onode_network := getv $onode_network_key}}
-{{$onode_reflector_key := printf "/bgp/v1/subnet/host/%s/reflector" .}}{{if exists $onode_reflector_key}}{{$onode_reflector := getv $onode_reflector_key}}
+# -- Peer with non-reflectors in this subnet ---
+
+{{range $host := lsdir "/subnet/host"}}
+{{$onode_as_key := printf "/subnet/host/%s/as_num" .}}
+{{$onode_ip := getv (printf "/subnet/host/%s/ip_addr_v4" .)}}
+{{$onode_network := getv (printf "/subnet/host/%s/network_v4" .)}}
+{{$onode_reflector := getv (printf "/subnet/host/%s/reflector" .)}}
 {{$nums := split $onode_ip "."}}{{$id := join $nums "_"}}
-# For peer {{$onode_ip_key}}
+# For peer {{(printf "/subnet/host/%s/ip_addr_v4" .)}}
 {{if eq $onode_ip ($node_ip) }}# Skipping ourselves ({{$onode_ip}})
 {{else if eq $onode_reflector "subnet"}}# Skipping co-subnet reflector {{$onode_ip}}
 {{else if ne "" $onode_ip}}protocol bgp SubnetReflector_{{$id}} from bgp_template {
-  neighbor {{$onode_ip}} as {{if exists $onode_as_key}}{{getv $onode_as_key}}{{else}}{{getv "/bgp/v1/global/as_num"}}{{end}};
-  source address {{$node_ip}};  # The local address we use for the TCP connection
-{{if and (ne $ipPool.ipip_mode "always") (eq $onode_network $node_network)}}
-  direct;    # There will be no host-SNAT when routing packets to this node
-  gateway direct;
-{{else}}
-  multihop;
-  gateway recursive; # This should be the default, but just in case.
-{{end}}
+  neighbor {{$onode_ip}} as {{if exists $onode_as_key}}{{getv $onode_as_key}}{{else}}{{getv "/global/as_num"}}{{end}};
+  source address {{$node_ip}};
   rr client;
-  rr cluster id {{index (split $ipPool.cidr "/") 0}};
-}{{end}}{{end}}{{end}}{{end}}{{end}}
+  rr cluster id {{index (split $node_network "/") 0}};
+  next hop keep;
+}{{end}}{{end}}
 
-# --- Peer with other reflectors ---
+# --- Peer with all other reflectors ---
 
-{{range $host := lsdir "/bgp/v1/reflector/host"}}
-# HOST {{gets (printf "/bgp/v1/reflector/host/%s/*" .)}}
-{{$onode_as_key := printf "/bgp/v1/reflector/host/%s/as_num" .}}
-{{$onode_ip_key := printf "/bgp/v1/reflector/host/%s/ip_addr_v4" .}}{{if exists $onode_ip_key}}{{$onode_ip := getv $onode_ip_key}}
-{{$onode_network_key := printf "/bgp/v1/reflector/host/%s/network_v4" .}}{{if exists $onode_network_key}}{{$onode_network := getv $onode_network_key}}
+{{range $host := lsdir "/reflector/host"}}
+{{$onode_as_key := printf "/reflector/host/%s/as_num" .}}
+{{$onode_ip := getv (printf "/reflector/host/%s/ip_addr_v4" .)}}
+{{$onode_network := getv (printf "/reflector/host/%s/network_v4" .)}}
 {{$nums := split $onode_ip "."}}{{$id := join $nums "_"}}
-# For peer {{$onode_ip_key}}
+# For peer {{(printf "/subnet/host/%s/ip_addr_v4" .)}}
 {{if eq $onode_ip ($node_ip) }}# Skipping ourselves ({{$node_ip}})
 {{else if ne "" $onode_ip}}protocol bgp SubnetReflectorMesh_{{$id}} from bgp_template {
-  neighbor {{$onode_ip}} as {{if exists $onode_as_key}}{{getv $onode_as_key}}{{else}}{{getv "/bgp/v1/global/as_num"}}{{end}};
-  source address {{$node_ip}};  # The local address we use for the TCP connection
-  rr cluster id {{index (split $ipPool.cidr "/") 0}};
-{{if and (ne $ipPool.ipip_mode "always") (eq $onode_network $node_network)}}
-  direct;    # There will be no host-SNAT when routing packets to this node
-  gateway direct;
-{{else}}
-  multihop;
-  gateway recursive; # This should be the default, but just in case.
-{{end}}
-}{{end}}{{end}}{{end}}{{end}}
+  neighbor {{$onode_ip}} as {{if exists $onode_as_key}}{{getv $onode_as_key}}{{else}}{{getv "/global/as_num"}}{{end}};
+  source address {{$node_ip}};
+  rr cluster id {{index (split $node_network "/") 0}};
+  next hop keep;
+}{{end}}{{end}}
 
-{{else}}
-# This node is not a reflector!
+{{else}} # This node is not a reflector
 
-# Peer with all reflectors in this subnet ( {{$node_network}} )
-{{range $host := lsdir "/bgp/v1/subnet/reflector/host"}}
-# HOST {{gets (printf "/bgp/v1/subnet/reflector/host/%s/*" .)}}
-{{$onode_as_key := printf "/bgp/v1/subnet/reflector/host/%s/as_num" .}}
-{{$onode_ip_key := printf "/bgp/v1/subnet/reflector/host/%s/ip_addr_v4" .}}{{if exists $onode_ip_key}}{{$onode_ip := getv $onode_ip_key}}
-{{$onode_network_key := printf "/bgp/v1/subnet/reflector/host/%s/network_v4" .}}{{if exists $onode_network_key}}{{$onode_network := getv $onode_network_key}}
+# --- Peer with reflectors in this subnet  ---
+
+{{range $host := lsdir "/subnet/reflector/host"}}
+{{$onode_as_key := printf "/subnet/reflector/host/%s/as_num" .}}
+{{$onode_ip := getv (printf "/subnet/reflector/host/%s/ip_addr_v4" .)}}
+{{$onode_network := getv (printf "/subnet/reflector/host/%s/network_v4" .)}}
 {{$nums := split $onode_ip "."}}{{$id := join $nums "_"}}
-# For peer {{$onode_ip_key}}
+# For peer {{(printf "/subnet/host/%s/ip_addr_v4" .)}}
 {{if eq $onode_ip ($node_ip) }}# Skipping ourselves ({{$node_ip}})
-{{else if ne "" $onode_ip}}protocol bgp SubnetReflectorMesh_{{$id}} from bgp_template {
-  neighbor {{$onode_ip}} as {{if exists $onode_as_key}}{{getv $onode_as_key}}{{else}}{{getv "/bgp/v1/global/as_num"}}{{end}};
-  source address {{$node_ip}};  # The local address we use for the TCP connection
-  next hop self;     # Disable next hop processing and always advertise our
-                     # local address as nexthop
-{{if and (ne $ipPool.ipip_mode "always") (eq $onode_network $node_network)}}
-  direct;    # There will be no host-SNAT when routing packets to this node
-  gateway direct;
-{{else}}
-  multihop;
-  gateway recursive; # This should be the default, but just in case.
+{{else if ne "" $onode_ip}}protocol bgp SubnetReflectorClient_{{$id}} from bgp_template {
+  neighbor {{$onode_ip}} as {{if exists $onode_as_key}}{{getv $onode_as_key}}{{else}}{{getv "/global/as_num"}}{{end}};
+  source address {{$node_ip}};
+  next hop keep;
+}{{end}}{{end}}
 {{end}}
-}{{end}}{{end}}{{end}}{{end}}
-{{end}}
-
 
 # ------------- Global peers -------------
-{{if ls "/bgp/v1/global/peer_v4"}}
-{{range gets "/bgp/v1/global/peer_v4/*"}}{{$data := json .Value}}
+{{if ls "/global/peer_v4"}}
+{{range gets "/global/peer_v4/*"}}{{$data := json .Value}}
 {{$nums := split $data.ip "."}}{{$id := join $nums "_"}}
 # For peer {{.Key}}
 {{if eq $data.ip $node_ip}} # Skipping ourselves {{$node_ip}}
 {{else}}protocol bgp Global_{{$id}} from bgp_template {
   neighbor {{$data.ip}} as {{$data.as_num}};
   source address {{$node_ip}};  # The local address we use for the TCP connection
-  multihop;
-  gateway recursive;
 }{{end}}
 {{end}}
 {{else}}# No global peers configured.{{end}}
 
 
 # ------------- Node-specific peers -------------
-{{$node_peers_key := printf "/bgp/v1/host/%s/peer_v4" (getenv "NODENAME")}}
+{{$node_peers_key := printf "/host/%s/peer_v4" (getenv "NODENAME")}}
 {{if ls $node_peers_key}}
 {{range gets (printf "%s/*" $node_peers_key)}}{{$data := json .Value}}
 {{$nums := split $data.ip "."}}{{$id := join $nums "_"}}
@@ -162,8 +137,6 @@ template bgp bgp_template {
 protocol bgp Node_{{$id}} from bgp_template {
   neighbor {{$data.ip}} as {{$data.as_num}};
   source address {{$node_ip}};  # The local address we use for the TCP connection
-  multihop;
-  gateway recursive;
 }
 {{end}}
 {{else}}# No node-specific peers configured.{{end}}

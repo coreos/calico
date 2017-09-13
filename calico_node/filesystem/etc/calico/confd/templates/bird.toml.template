@@ -1,14 +1,13 @@
 [template]
-src = "bird.cfg.{{if (json (getv "/node_mesh")).enabled}}mesh{{else}}no-mesh{{end}}.template"
+src = "bird.cfg.no-mesh.template"
 dest = "/etc/calico/confd/config/bird.cfg"
-prefix = "/calico"
+prefix = "/calico/bgp/v1"
 keys = [
-    "/bgp/v1/{{if (json (getv "/node_mesh")).enabled}}host{{else}}host/{{getenv "NODENAME"}}{{end}}",
-    "/bgp/v1/global",
-    "/v1/ipam/v4/pool",
-    "/bgp/v1/reflector/host",
-    "/bgp/v1/subnet/host",
-    "/bgp/v1/subnet/reflector/host",
+    "/host/{{getenv "NODENAME"}}",
+    "/global",
+    "/reflector/host",
+    "/subnet/host",
+    "/subnet/reflector/host",
 ]
 check_cmd = "bird -p -c {{"{{"}}.src{{"}}"}}"
 reload_cmd = "pkill -HUP bird || true"
