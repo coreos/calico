@@ -11,11 +11,18 @@ filter calico_pools {
 }
 
 {{$network_key := printf "/bgp/v1/host/%s/network_v4" (getenv "NODENAME")}}{{$network := getv $network_key}}
-filter calico_ipip {
+filter calico_ipip
+ip next_hop_ip;
+{
 {{range ls "/v1/ipam/v4/pool"}}{{$data := json (getv (printf "/v1/ipam/v4/pool/%s" .))}}
   if ( net ~ {{$data.cidr}} ) then {
 {{if $data.ipip_mode}}{{if eq $data.ipip_mode "cross-subnet"}}
-    if ( bgp_next_hop ~ {{$network}} ) then
+    if ( defined( bgp_next_hop) ) then {
+      next_hop_ip = bgp_next_hop;
+    }else{
+      next_hop_ip = gw;
+    }
+    if ( next_hop_ip ~ {{$network}} ) then
       krt_tunnel = "";                     {{/* Destination in ipPool, mode is cross sub-net, route from-host on subnet, do not use IPIP */}}
     else
       krt_tunnel = "{{$data.ipip}}";       {{/* Destination in ipPool, mode is cross sub-net, route from-host off subnet, set the tunnel (if IPIP not enabled, value will be "") */}}
